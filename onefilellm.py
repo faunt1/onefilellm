@@ -1,28 +1,37 @@
-import requests
-from bs4 import BeautifulSoup, Comment
-from urllib.parse import urljoin, urlparse
-from PyPDF2 import PdfReader
 import os
-import sys
-import tiktoken
-import nltk
-from nltk.corpus import stopwords
 import re
+import sys
+import xml.etree.ElementTree as ET
+from urllib.parse import urljoin, urlparse
+
 import nbformat
-from nbconvert import PythonExporter
-from youtube_transcript_api import YouTubeTranscriptApi
-from youtube_transcript_api.formatters import TextFormatter
+import nltk
 import pyperclip
+import requests
+import tiktoken
 import wget
+from bs4 import BeautifulSoup, Comment
+from nbconvert import PythonExporter
+from nltk.corpus import stopwords
+from PyPDF2 import PdfReader
 from rich import print
 from rich.console import Console
 from rich.panel import Panel
-from rich.text import Text
+from rich.progress import BarColumn, Progress, TextColumn, TimeRemainingColumn
 from rich.prompt import Prompt
-from rich.progress import Progress, TextColumn, BarColumn, TimeRemainingColumn
-import xml.etree.ElementTree as ET
+from rich.text import Text
+from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api.formatters import TextFormatter
 
-EXCLUDED_DIRS = ["dist", "node_modules", ".git", "__pycache__"]  # Add any other directories to exclude here
+EXCLUDED_DIRS = [
+    "dist",
+    "node_modules",
+    ".git",
+    "__pycache__",
+    "backup",
+]  # Add any other directories to exclude here
+
+excluded_dirs_pattern = '|'.join(re.escape(dir) for dir in EXCLUDED_DIRS)
 
 def safe_file_read(filepath, fallback_encoding='latin1'):
     try:
@@ -123,7 +132,7 @@ def process_github_repo(repo_url):
         # Any remaining parts after the branch/tag name form the subdirectory
         if len(repo_url_parts) > 4:
             subdirectory = "/".join(repo_url_parts[4:])
-    
+
     contents_url = f"{api_base_url}{repo_name}/contents"
     if subdirectory:
         contents_url = f"{contents_url}/{subdirectory}"
@@ -148,7 +157,7 @@ def process_github_repo(repo_url):
                 temp_file = f"temp_{file['name']}"
                 download_file(file["download_url"], temp_file)
 
-                repo_content.append(f'<file name="{escape_xml(file["path"])}">') 
+                repo_content.append(f'<file name="{escape_xml(file["path"])}">')
                 if file["name"].endswith(".ipynb"):
                     repo_content.append(escape_xml(process_ipynb_file(temp_file)))
                 else:
@@ -166,12 +175,22 @@ def process_github_repo(repo_url):
 
     return "\n".join(repo_content)
 
+def should_exclude_directory(dir_path):
+    """
+    Check if any part of the directory path matches any excluded directory using regex.
+    """
+    # 将排除目录列表拼接成正则表达式模式字符串
+
+    # 使用正则表达式检查目录路径是否包含任何排除目录
+    return bool(re.search(excluded_dirs_pattern, dir_path))
+
+
 def process_local_folder(local_path):
     def process_local_directory(local_path):
         content = [f'<source type="local_directory" path="{escape_xml(local_path)}">']
         for root, dirs, files in os.walk(local_path):
             # Exclude directories
-            dirs[:] = [d for d in dirs if d not in EXCLUDED_DIRS]
+            dirs[:] = [d for d in dirs if not re.search(excluded_dirs_pattern, d)]
 
             for file in files:
                 if is_allowed_filetype(file):
@@ -223,11 +242,11 @@ def process_arxiv_pdf(arxiv_abs_url):
 
 def extract_links(input_file, output_file):
     url_pattern = re.compile(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+')
-    
+
     with open(input_file, 'r', encoding='utf-8') as file:
         content = file.read()
         urls = re.findall(url_pattern, content)
-    
+
     with open(output_file, 'w', encoding='utf-8') as output:
         for url in urls:
             output.write(url + '\n')
@@ -248,13 +267,13 @@ def fetch_youtube_transcript(url):
         transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
         formatter = TextFormatter()
         transcript = formatter.format_transcript(transcript_list)
-        
+
         formatted_text = f'<source type="youtube_transcript" url="{escape_xml(url)}">\n'
         formatted_text += '<transcript>\n'
         formatted_text += escape_xml(transcript)
         formatted_text += '\n</transcript>\n'
         formatted_text += '</source>'
-        
+
         return formatted_text
     except Exception as e:
         return f'<source type="youtube_transcript" url="{escape_xml(url)}">\n<error>{escape_xml(str(e))}</error>\n</source>'
@@ -308,7 +327,7 @@ def get_token_count(text, disallowed_special=[], chunk_size=1000):
     for chunk in chunks:
         tokens = enc.encode(chunk, disallowed_special=disallowed_special)
         total_tokens += len(tokens)
-    
+
     return total_tokens
 
 def is_same_domain(base_url, new_url):
@@ -447,7 +466,7 @@ def process_doi_or_pmid(identifier):
         print(f"Error processing identifier {identifier}: {str(e)}")
         print("Sci-hub appears to be inaccessible or the document was not found. Please try again later.")
         return error_text
-        
+
 def process_github_pull_request(pull_request_url):
     url_parts = pull_request_url.split("/")
     repo_owner = url_parts[3]
@@ -489,7 +508,7 @@ def process_github_pull_request(pull_request_url):
         formatted_text += f'{escape_xml(line)}\n'
         while comment_index < len(all_comments) and all_comments[comment_index].get("position") == diff_lines.index(line):
             comment = all_comments[comment_index]
-            formatted_text += f'<review_comment>\n'
+            formatted_text += '<review_comment>\n'
             formatted_text += f'<author>{escape_xml(comment["user"]["login"])}</author>\n'
             formatted_text += f'<content>{escape_xml(comment["body"])}</content>\n'
             formatted_text += f'<path>{escape_xml(comment["path"])}</path>\n'
@@ -502,7 +521,7 @@ def process_github_pull_request(pull_request_url):
 
     repo_url = f"https://github.com/{repo_owner}/{repo_name}"
     repo_content = process_github_repo(repo_url)
-    
+
     formatted_text += '<repository>\n'
     formatted_text += repo_content
     formatted_text += '</repository>\n'
@@ -511,7 +530,7 @@ def process_github_pull_request(pull_request_url):
     print(f"Pull request {pull_request_number} and repository content processed successfully.")
 
     return formatted_text
-    
+
 def escape_xml(text):
     return (
         str(text)
@@ -574,7 +593,7 @@ def process_github_issue(issue_url):
 
     repo_url = f"https://github.com/{repo_owner}/{repo_name}"
     repo_content = process_github_repo(repo_url)
-    
+
     formatted_text += '<repository>\n'
     formatted_text += repo_content
     formatted_text += '</repository>\n'
@@ -673,7 +692,7 @@ def main():
         input_path = sys.argv[1]
     else:
         input_path = Prompt.ask("\n[bold dodger_blue1]Enter the path or URL[/bold dodger_blue1]", console=console)
-    
+
     console.print(f"\n[bold bright_green]You entered:[/bold bright_green] [bold bright_yellow]{input_path}[/bold bright_yellow]\n")
 
     output_file = "uncompressed_output.txt"
@@ -741,6 +760,6 @@ def main():
             console.print(f"\n[bold red]An error occurred:[/bold red] {str(e)}")
             console.print("\nPlease check your input and try again.")
             raise  # Re-raise the exception for debugging purposes
-        
+
 if __name__ == "__main__":
     main()
