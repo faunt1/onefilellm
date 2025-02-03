@@ -92,3 +92,7 @@ pip-delete-this-directory.txt
 pip-log.txt
 pip-wheel-metadata/
 venv
+uncompressed_ccb.txt
+uncompressed_jason_work.txt
+uncompressed_joplin_it.txt
+uncompressed_stockmean.txt
